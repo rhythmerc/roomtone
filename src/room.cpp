@@ -41,12 +41,14 @@ constexpr int kCells = 6 * kN * kN, kParts = 6 * kF * kF;
 // The level per unit of the seen room's median brightness (by solid angle,
 // in passthrough's scale). The light from above moved the level 3x on
 // whether the camera caught the ceiling light, the room the same; the
-// walls' median hardly moves with a fixture in or out of view. Less where
-// the capture found lights, which add their own on top (as up 1: the sum of
-// their luminance): the user's picks put the level at 9.6 times the median
-// with no light, 9.0 at 0.04, 8.1-8.4 at 0.12 and 7.6-7.7 at 0.16; then 1.3
-// times that over a day of rooms.
-constexpr float kMedian = 12.5f, kLightDim = 1.25f, kLevelMin = 0.15f, kLevelMax = 1.6f;
+// walls' median hardly moves with a fixture in or out of view. The user's
+// picks put the level at 9.6 times the median with no light; then 1.3 times
+// that over a day of rooms. (It was also dimmed by the lights' share of the
+// reference's light, down to half: picked when every point got a light at
+// the head's strength. With each point's light its own, a stage far from a
+// light lost half its light the moment a capture found the light, 2-3x
+// with the mean's share, 2026-10-23.)
+constexpr float kMedian = 12.5f, kLevelMin = 0.15f, kLevelMax = 1.6f;
 // A frame a bright light dominates (a monitor ahead in a lit room) exposed
 // passthrough darker than the room: its exposure counts as up to kGlareMax
 // brighter, by the square root of its mean over its mean without the light
@@ -226,7 +228,7 @@ struct Room::Impl {
   float mean = 1.f, level = 1.f, coverage = 0.f;
   float display = 0.f;             // the light from above, in passthrough's scale
   float seen = 0.f, middle = 0.f;  // the seen parts' mean and median luminance, as display
-  float radiance = 0.f, dim = 1.f; // the median's relative radiance, and the lights' dimming
+  float radiance = 0.f; // the median's relative radiance
   float unclamped = 0.f;
   std::array<Rgb, 2> fill{}; // the unseen parts' colour (luminance 1), upper and lower
   // The points the light was last made for (tracking space; the first sets
@@ -344,7 +346,7 @@ float Room::Impl::factor(const Vec3* point, int* used, float* glare) const {
 // The level, for the point where it last was.
 void Room::Impl::makeLevel() {
   const float f = factor(havePoint ? &points[0] : nullptr, &pointFrames, &pointGlare);
-  unclamped = kMedian * dim * radiance * f;
+  unclamped = kMedian * radiance * f;
   level = std::clamp(unclamped, kLevelMin, kLevelMax);
 }
 
@@ -509,7 +511,10 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
     up[ch] = s[0][ch] + s[1][ch] - s[6][ch] - s[8][ch] + std::max(ld[0].y, 0.f) * lt[0][ch] +
              std::max(ld[1].y, 0.f) * lt[1][ch];
   b.upLum = lum(up);
-  b.mean = lum(s[0]) + 0.25 * (lum(lt[0]) + lum(lt[1]));
+  // The room's mean light without its lights, as the level (the walls'
+  // median) leaves them out: with them, a stage far from a light found by
+  // the capture lost its share of the head's light (2026-10-23).
+  b.mean = lum(s[0]);
   return b;
 }
 
@@ -569,9 +574,7 @@ void Room::Impl::make() {
   // The level from the walls as seen, not from above: a light in or out of
   // the camera's view (it sees ~36 degrees up and down) moves the light from
   // above 3x, the room the same.
-  const double lightsLum = (lum(head.lt[0]) + lum(head.lt[1])) * scale;
   radiance = static_cast<float>(mid);
-  dim = static_cast<float>(std::max(1.0 - kLightDim * lightsLum, 0.5));
   makeLevel();
   mean = static_cast<float>(head.mean * scale);
   // Each point's light, from there (the voxels drawn into a copy of the

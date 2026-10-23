@@ -26,6 +26,13 @@ int main(int argc, char** argv) {
     roomtone::Lighting l;
     if (!(multi ? room.lightAt(size_t{0}, l) : room.lightAt(p, l)))
       return;
+    // What Aurora's stage gets on an up-facing surface: the light there
+    // times level * 0.7 / mean (its fighters' and stage's gain).
+    float stageUp = l.sh[0][1] + l.sh[1][1] - l.sh[6][1] - l.sh[8][1];
+    for (const auto& li : l.lights)
+      stageUp += std::max(li.dir.y, 0.f) * li.color[1];
+    stageUp *= l.level * 0.7f / std::max(l.mean, 1e-3f);
+    std::printf("stage up %.3f\n", stageUp);
     std::printf("t %.1f s, point %.2f,%.2f,%.2f, %u frames (%u restarts), %u hits, %u depth images: level %.2f, "
                 "mean %.2f, key %.2f,%.2f,%.2f from %.2f,%.2f,%.2f%s, fill %.2f,%.2f,%.2f from %.2f,%.2f,%.2f%s\n  %s\n",
                 t / 1e9, p.x, p.y, p.z, frames, restarts, hits, depths, l.level, l.mean, l.lights[0].color[0],
