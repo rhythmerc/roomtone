@@ -1,6 +1,7 @@
-// roomtone_replay RECORDING [--every N]: plays a recorded session into a
-// Room and prints what it made at each recorded query (every Nth, default
-// every query 2 s apart), and at the end.
+// roomtone_replay RECORDING [--seconds S] [--probe x,y,z dx,dy,dz count step]:
+// plays a recorded session into a Room and prints what it made at the
+// recorded queries (S apart, default 2 s), at the end, and at points along a
+// line from there.
 #include "roomtone/record.hpp"
 
 #include <cstdio>
@@ -69,5 +70,42 @@ int main(int argc, char** argv) {
   room.make();
   std::printf("end:\n");
   print(lastTime, havePoint ? lastPoint : roomtone::Vec3{});
+  // --probe x,y,z dx,dy,dz count step: the light at points along a line
+  // (tracking space at the recording's end), each made alone: the light
+  // from above and toward the key light, as a shader would light them.
+  for (int i = 2; i + 4 < argc; ++i) {
+    if (std::strcmp(argv[i], "--probe") != 0)
+      continue;
+    roomtone::Vec3 o, d;
+    std::sscanf(argv[i + 1], "%f,%f,%f", &o.x, &o.y, &o.z);
+    std::sscanf(argv[i + 2], "%f,%f,%f", &d.x, &d.y, &d.z);
+    const int n = std::atoi(argv[i + 3]);
+    const float step = static_cast<float>(std::atof(argv[i + 4]));
+    const auto eval = [](const roomtone::Lighting& l, roomtone::Vec3 nv, int ch) {
+      const float x = nv.x, y = nv.y, z = nv.z;
+      const float poly[9] = {1.f, y, z, x, x * y, y * z, 3.f * z * z - 1.f, x * z, x * x - y * y};
+      float e = 0.f;
+      for (int k = 0; k < 9; ++k)
+        e += l.sh[k][ch] * poly[k];
+      return e;
+    };
+    for (int k = 0; k <= n; ++k) {
+      const roomtone::Vec3 p{o.x + d.x * step * k, o.y + d.y * step * k, o.z + d.z * step * k};
+      roomtone::Lighting l;
+      room.setPoints(&p, 1);
+      room.make();
+      if (!room.lightAt(size_t{0}, l))
+        continue;
+      const auto& key = l.lights[0];
+      const float shUp = eval(l, {0.f, 1.f, 0.f}, 1), shKey = eval(l, key.dir, 1);
+      float lit = shUp;
+      for (const auto& li : l.lights)
+        lit += std::max(li.dir.y, 0.f) * li.color[1];
+      std::printf("probe %.2f,%.2f,%.2f: up %.3f (SH %.3f), facing the key SH %.3f + key %.3f%s at %.2f m, "
+                  "mean %.2f, level %.2f\n  %s\n",
+                  p.x, p.y, p.z, lit, shUp, shKey, key.color[1], key.placed ? " (placed)" : "", key.range, l.mean,
+                  l.level, room.summary().substr(0, 260).c_str());
+    }
+  }
   return 0;
 }

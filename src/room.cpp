@@ -218,6 +218,7 @@ struct Room::Impl {
     std::array<bool, 2> lightAt{};
     std::array<Vec3, 2> lightPos{};
     std::array<int, 2> lightHits{};
+    std::array<float, 2> lightVoxelShare{}; // of a placed light's brightness, what the point's voxels saw
     std::array<float, 2> lightRange{}; // a placed light's distance from where its colour was measured
     float upAt = 1.f;                  // the light from above there, as the reference's (1)
   };
@@ -602,25 +603,33 @@ void Room::Impl::make() {
       a.lightDir[l] = rot_y(st.ld[l], yaw);
     }
     // Where the lights are: a voxel's, where the voxels of its parts are, by
-    // brightness, its range the distance from the point (its colour
-    // measured there); else from the depth hits within 10 degrees of it
-    // (none: at a distance, as daylight through a window, whose glass depth
-    // doesn't see), its range from where the head was.
+    // brightness; else from the depth hits within 10 degrees of it (none: at
+    // a distance, as daylight through a window, whose glass depth doesn't
+    // see), its range from where the head was. A placed light's range is
+    // where its colour was measured: the point's distance for what the
+    // point's voxels saw of it, the head's for what the parts no voxel
+    // covers kept of the head's view (a window's glass, which depth sees
+    // through: its colour was the head's at every point, and its range from
+    // the point cancelled its falloff, 2026-10-23).
     for (int l = 0; l < 2; ++l) {
       a.lightAt[l] = false;
       a.lightHits[l] = 0;
       a.lightRange[l] = 0.f;
+      a.lightVoxelShare[l] = 0.f;
       if (st.picked[l] < 0)
         continue;
       const auto& cells = st.lightCells[l];
-      double vw = 0.0;
+      double vw = 0.0, all = 0.0;
       Vec3 vp{};
       for (int f = 0; f < kParts; ++f) {
         const int face = f / (kF * kF), j = (f / kF) % kF, i = f % kF;
         const int cell = (face * kN + j / kSub) * kN + i / kSub;
-        if (!fromVoxel[f] || std::find(cells.begin(), cells.end(), cell) == cells.end())
+        if (std::find(cells.begin(), cells.end(), cell) == cells.end())
           continue;
         const double w = lum(Pp[f]);
+        all += w;
+        if (!fromVoxel[f])
+          continue;
         vp = vp + partPos[f] * static_cast<float>(w);
         vw += w;
       }
@@ -628,7 +637,11 @@ void Room::Impl::make() {
         vp = vp * static_cast<float>(1.0 / vw);
         a.lightPos[l] = fromCapture(vp);
         a.lightAt[l] = true;
-        a.lightRange[l] = std::sqrt(dot(vp - here, vp - here));
+        const float share = all > 0.0 ? static_cast<float>(vw / all) : 1.f;
+        a.lightVoxelShare[l] = share;
+        const float dHere2 = dot(vp - here, vp - here);
+        const float dHead2 = views.empty() ? dHere2 : dot(vp - headMean, vp - headMean);
+        a.lightRange[l] = std::sqrt(share * dHere2 + (1.f - share) * dHead2);
         continue;
       }
       const Vec3 u = st.ld[l];
@@ -1044,7 +1057,8 @@ std::string Room::summary() const {
     char b[48];
     if (!a0.lightAt[l])
       return std::string{"no"};
-    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f", a0.lightPos[l].x, a0.lightPos[l].y, a0.lightPos[l].z);
+    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f (%.0f%% from voxels)", a0.lightPos[l].x, a0.lightPos[l].y,
+                  a0.lightPos[l].z, a0.lightVoxelShare[l] * 100.f);
     return std::string{b};
   };
   char exposure[48];

@@ -34,7 +34,7 @@ Coordinates are tracking space in metres, +Y up (OpenXR's). A `Room` isn't threa
 
 ## Record and replay
 
-`roomtone::Recorder` writes a session's inputs to a file; `roomtone_replay FILE` plays it back on a desktop and prints what the room made, so the estimate can be tuned and tested without a headset.
+`roomtone::Recorder` writes a session's inputs to a file; `roomtone_replay FILE` plays it back on a desktop and prints what the room made, so the estimate can be tuned and tested without a headset. `--probe x,y,z dx,dy,dz count step` then asks for the light at points along a line (the light from above, and toward the key light).
 
 ## Status
 
