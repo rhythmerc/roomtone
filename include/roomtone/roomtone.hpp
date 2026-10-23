@@ -78,12 +78,16 @@ struct Light {
 struct Lighting {
   // SH L2 irradiance over pi, each coefficient times its basis constant, so
   // a shader evaluates the bare polynomials 1, y, z, x, xy, yz, 3z^2 - 1,
-  // xz, x^2 - y^2 at the unit normal (tracking space). Scaled so an
-  // up-facing surface gets 1, lights included.
+  // xz, x^2 - y^2 at the unit normal (tracking space). In the units of the
+  // reference, the room as the head saw it, where an up-facing surface gets
+  // 1 (lights included): without depth the light at any point is the
+  // reference's; with it, content nearer a light gets more than 1 from it
+  // and farther less. Normalize by the reference (mean, 1 for up), not by
+  // the light at the point, or a light's falloff cancels.
   std::array<Rgb, 9> sh{};
   std::array<Light, 2> lights{};
-  float mean = 1.f;  // the mean light over every direction (up-facing 1)
-  float level = 1.f; // the room's brightness as passthrough shows it (ABL)
+  float mean = 1.f;  // the reference's mean light over every direction
+  float level = 1.f; // the reference's brightness as passthrough shows it (ABL)
 };
 
 // What a frame did.

@@ -5,6 +5,7 @@
 // there, not from the head.
 #include "roomtone/roomtone.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -135,8 +136,26 @@ int main() {
   const Light& kb = b.lights[0];
   std::printf("under the lamp: key %.3f from %.2f,%.2f,%.2f\n", kb.color[0], kb.dir.x, kb.dir.y, kb.dir.z);
   check(kb.dir.y > 0.98f, "from straight above, under it");
-  std::printf("level %.2f at the table, %.2f under the lamp\n", a.level, b.level);
-  check(b.level > a.level, "brighter under the lamp");
+  // Brighter nearer the lamp, in the reference's (the head's) units: the
+  // light on an up-facing surface, the mean light and the key light itself
+  // (normalized at the point, the falloff cancelled: farther from a light
+  // the rest brightened, 2026-10-22).
+  const auto up = [](const Lighting& l) {
+    float e = l.sh[0][1] + l.sh[1][1] - l.sh[6][1] - l.sh[8][1];
+    for (const auto& li : l.lights)
+      e += std::max(li.dir.y, 0.f) * li.color[1];
+    return e;
+  };
+  Lighting c;
+  const Vec3 far{-1.6f, 0.8f, 1.6f};
+  room.lightAt(far, c);
+  room.make();
+  room.lightAt(far, c);
+  std::printf("light from above: %.2f under the lamp, %.2f at the table, %.2f far (head 1); key %.3f, %.3f, %.3f\n",
+              up(b), up(a), up(c), kb.color[1], ka.color[1], c.lights[0].color[1]);
+  check(up(b) > up(a) && up(a) > up(c), "brighter nearer the lamp");
+  check(kb.color[1] > ka.color[1] && ka.color[1] > c.lights[0].color[1], "the key light falls off with distance");
+  check(a.mean == b.mean && b.mean == c.mean, "the fighters' reference (mean) stays the head's");
   // What a make costs from a moved point (the XR thread pays it as the stage moves).
   const auto t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < 20; ++i) {
