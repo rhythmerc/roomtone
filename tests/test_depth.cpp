@@ -156,6 +156,23 @@ int main() {
   check(up(b) > up(a) && up(a) > up(c), "brighter nearer the lamp");
   check(kb.color[1] > ka.color[1] && ka.color[1] > c.lights[0].color[1], "the key light falls off with distance");
   check(a.mean == b.mean && b.mean == c.mean, "the fighters' reference (mean) stays the head's");
+  // The three points at once, in one make: each as made alone, and each
+  // placed light's range its distance from the point.
+  {
+    const Vec3 pts[3] = {table, under, far};
+    room.setPoints(pts, 3);
+    room.make();
+    Lighting m[3];
+    for (int i = 0; i < 3; ++i)
+      room.lightAt(static_cast<size_t>(i), m[i]);
+    const float r0 = std::sqrt(dotv(sub(m[0].lights[0].pos, table), sub(m[0].lights[0].pos, table)));
+    std::printf("three points: light from above %.2f, %.2f, %.2f; range at the table %.2f (distance %.2f)\n",
+                up(m[0]), up(m[1]), up(m[2]), m[0].lights[0].range, r0);
+    check(std::abs(up(m[0]) - up(a)) < 1e-3f && std::abs(up(m[1]) - up(b)) < 1e-3f &&
+              std::abs(up(m[2]) - up(c)) < 1e-3f,
+          "points made together as alone");
+    check(std::abs(m[0].lights[0].range - r0) < 1e-3f, "a placed light's range is its distance from the point");
+  }
   // What a make costs from a moved point (the XR thread pays it as the stage moves).
   const auto t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < 20; ++i) {

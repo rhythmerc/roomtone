@@ -20,10 +20,10 @@ int main(int argc, char** argv) {
   uint32_t frames = 0, restarts = 0, hits = 0, depths = 0;
   int64_t lastPrint = 0;
   roomtone::Vec3 lastPoint;
-  bool havePoint = false;
+  bool havePoint = false, multi = false; // the last ask was setPoints (several)
   const auto print = [&](int64_t t, roomtone::Vec3 p) {
     roomtone::Lighting l;
-    if (!room.lightAt(p, l))
+    if (!(multi ? room.lightAt(size_t{0}, l) : room.lightAt(p, l)))
       return;
     std::printf("t %.1f s, point %.2f,%.2f,%.2f, %u frames (%u restarts), %u hits, %u depth images: level %.2f, "
                 "mean %.2f, key %.2f,%.2f,%.2f from %.2f,%.2f,%.2f%s, fill %.2f,%.2f,%.2f from %.2f,%.2f,%.2f%s\n  %s\n",
@@ -47,7 +47,9 @@ int main(int argc, char** argv) {
     case roomtone::ReplayEvent::Depth:
       ++depths;
       break;
+    case roomtone::ReplayEvent::Points:
     case roomtone::ReplayEvent::Query:
+      multi = e.kind == roomtone::ReplayEvent::Points;
       lastPoint = e.point;
       havePoint = true;
       lastTime = e.timeNs;

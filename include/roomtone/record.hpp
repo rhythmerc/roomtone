@@ -29,6 +29,8 @@ public:
   void moved(Vec3 p0, float yaw0, Vec3 p1, float yaw1);
   // A lightAt call's point (replay asks there too).
   void query(Vec3 point, int64_t timeNs);
+  // A setPoints call's points (the first is the replay's query).
+  void points(const Vec3* points, size_t count, int64_t timeNs);
 
 private:
   void put(uint8_t type, const void* data, uint32_t size);
@@ -38,9 +40,9 @@ private:
 
 // What a replay saw at each recorded query.
 struct ReplayEvent {
-  enum Kind { Reset, Camera, Frame, Hit, Depth, Moved, Query } kind;
+  enum Kind { Reset, Camera, Frame, Hit, Depth, Moved, Query, Points } kind;
   int64_t timeNs = 0;      // a frame's or a query's
-  Vec3 point;              // a query's
+  Vec3 point;              // a query's (the first of a Points')
   const FrameResult* frame = nullptr; // a frame's result
 };
 

@@ -72,6 +72,9 @@ struct Light {
   Vec3 dir{0.f, 1.f, 0.f}; // toward the light, from the point asked about
   bool placed = false;  // whether it has a place (pos) in the room
   Vec3 pos;
+  // A placed light's distance from the point, where its colour applies: a
+  // renderer lighting a surface elsewhere scales it by range^2 / d^2.
+  float range = 0.f;
 };
 
 // The light at a point.
@@ -123,10 +126,15 @@ public:
   bool made() const;
   uint32_t frames() const;
   size_t hits() const;
-  // The light at a point (where the content is); false while none is made.
+  // The points the light is made for (where the content is: one, or a few
+  // across it to blend between); the first sets the level's exposure.
   // Cheap, for a render thread: with depth, a point moved 5 cm makes the
   // light stale (the placed lights re-aimed meanwhile), and the next frame
-  // or make() makes it from there.
+  // or make() makes it from there (a make costs one build per point).
+  void setPoints(const Vec3* points, size_t count);
+  // The light at points[i]; false while none is made.
+  bool lightAt(size_t i, Lighting& out) const;
+  // One point: setPoints(&point, 1), then lightAt(0).
   bool lightAt(Vec3 point, Lighting& out);
   // Whether a make is due for a moved point.
   bool stale() const;

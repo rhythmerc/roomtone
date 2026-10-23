@@ -9,7 +9,7 @@ namespace roomtone {
 namespace {
 
 constexpr char kMagic[8] = {'R', 'T', 'O', 'N', 'E', '0', '0', '1'};
-enum : uint8_t { kReset = 1, kCamera, kFrame, kHit, kDepth, kMoved, kQuery };
+enum : uint8_t { kReset = 1, kCamera, kFrame, kHit, kDepth, kMoved, kQuery, kPoints };
 
 struct FrameHeader {
   int32_t cols, rows;
@@ -96,6 +96,11 @@ void Recorder::moved(Vec3 p0, float yaw0, Vec3 p1, float yaw1) {
 void Recorder::query(Vec3 point, int64_t timeNs) {
   const QueryRecord q{point, timeNs};
   put(kQuery, &q, sizeof q);
+}
+void Recorder::points(const Vec3* pts, size_t count, int64_t timeNs) {
+  if (!pts || count == 0)
+    return;
+  put2(kPoints, &timeNs, sizeof timeNs, pts, static_cast<uint32_t>(count * sizeof(Vec3)));
 }
 
 bool replay(const std::string& path, Room& room, const std::function<void(const ReplayEvent&)>& onEvent) {
@@ -194,6 +199,17 @@ bool replay(const std::string& path, Room& room, const std::function<void(const 
       e.kind = ReplayEvent::Query;
       e.point = q.point;
       e.timeNs = q.timeNs;
+      break;
+    }
+    case kPoints: {
+      if (size < sizeof(int64_t) + sizeof(Vec3) || (size - sizeof(int64_t)) % sizeof(Vec3) != 0)
+        continue;
+      std::vector<Vec3> pts((size - sizeof(int64_t)) / sizeof(Vec3));
+      std::memcpy(&e.timeNs, buf.data(), sizeof(int64_t));
+      std::memcpy(pts.data(), buf.data() + sizeof(int64_t), pts.size() * sizeof(Vec3));
+      room.setPoints(pts.data(), pts.size());
+      e.kind = ReplayEvent::Points;
+      e.point = pts[0];
       break;
     }
     default:

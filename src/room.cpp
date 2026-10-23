@@ -207,27 +207,32 @@ struct Room::Impl {
   float voxelShare = 0.f; // the parts the voxels covered at the last make
   bool stale = false;     // the point moved since: the next frame (or make) makes the light again
   float makeMs = 0.f, makeMaxMs = 0.f; // the last make's time, and the longest
-  float upAt = 1.f;       // the light from above at the point, as the reference's (1)
 
-  // The light last made (made: any), in tracking space.
+  // The light last made (made: any), at each point asked about, in
+  // tracking space.
   bool made = false;
-  std::array<Rgb, 9> sh{};
-  std::array<Vec3, 2> lightDir{Vec3{0.f, 1.f, 0.f}, Vec3{0.f, 1.f, 0.f}};
-  std::array<Rgb, 2> light{};
-  std::array<bool, 2> lightAt{};
-  std::array<Vec3, 2> lightPos{};
-  std::array<int, 2> lightHits{};
-  std::array<float, 2> lightRange{}; // a placed light's distance from the head where it was seen
+  struct At {
+    std::array<Rgb, 9> sh{};
+    std::array<Vec3, 2> lightDir{Vec3{0.f, 1.f, 0.f}, Vec3{0.f, 1.f, 0.f}};
+    std::array<Rgb, 2> light{};
+    std::array<bool, 2> lightAt{};
+    std::array<Vec3, 2> lightPos{};
+    std::array<int, 2> lightHits{};
+    std::array<float, 2> lightRange{}; // a placed light's distance from where its colour was measured
+    float upAt = 1.f;                  // the light from above there, as the reference's (1)
+  };
+  std::vector<At> at = std::vector<At>(1);
   float mean = 1.f, level = 1.f, coverage = 0.f;
   float display = 0.f;             // the light from above, in passthrough's scale
   float seen = 0.f, middle = 0.f;  // the seen parts' mean and median luminance, as display
   float radiance = 0.f, dim = 1.f; // the median's relative radiance, and the lights' dimming
   float unclamped = 0.f;
   std::array<Rgb, 2> fill{}; // the unseen parts' colour (luminance 1), upper and lower
-  // The point the level was last made for (tracking space), and from how
-  // many frames looking at it (0: all of them).
+  // The points the light was last made for (tracking space; the first sets
+  // the level's exposure), and from how many frames looking at it (0: all
+  // of them).
   bool havePoint = false;
-  Vec3 pointAt;
+  std::vector<Vec3> points;
   int pointFrames = 0;
   float pointGlare = 1.f;
 
@@ -247,7 +252,7 @@ struct Room::Impl {
   };
   Built build(const std::vector<std::array<double, 3>>& P, const std::vector<bool>& partSeen);
   void make();
-  Vec3 evalPoint() const;
+  Vec3 evalPoint(size_t i) const;
   void splat(Vec3 at, std::vector<std::array<double, 3>>& P, std::vector<bool>& partSeen,
              std::vector<Vec3>& partPos, std::vector<bool>& fromVoxel);
   std::string brightest() const;
@@ -267,13 +272,11 @@ void Room::reset() {
   c.views.clear();
   c.hits.clear();
   c.hitNext = 0;
-  c.lightAt = {};
-  c.lightRange = {};
+  c.at.assign(1, {});
   c.changedNs = 0;
   c.depth.clear();
   c.voxels.clear();
   c.voxelShare = 0.f;
-  c.upAt = 1.f;
   c.makeMaxMs = 0.f;
 }
 
@@ -339,7 +342,7 @@ float Room::Impl::factor(const Vec3* point, int* used, float* glare) const {
 
 // The level, for the point where it last was.
 void Room::Impl::makeLevel() {
-  const float f = factor(havePoint ? &pointAt : nullptr, &pointFrames, &pointGlare);
+  const float f = factor(havePoint ? &points[0] : nullptr, &pointFrames, &pointGlare);
   unclamped = kMedian * dim * radiance * f;
   level = std::clamp(unclamped, kLevelMin, kLevelMax);
 }
@@ -550,20 +553,9 @@ void Room::Impl::make() {
   const Built head = build(P, partSeen);
   if (!(head.upLum > 1e-12))
     return;
-  const Vec3 at = evalPoint();
-  std::vector<Vec3> partPos(kParts);
-  std::vector<bool> fromVoxel(kParts);
-  splat(at, P, partSeen, partPos, fromVoxel);
-  const Built st = voxelShare > 0.f ? build(P, partSeen) : head;
-  const auto& lt = st.lt;
-  const auto& ld = st.ld;
-  const auto& picked = st.picked;
-  const auto& lightCells = st.lightCells;
-  const auto& s = st.s;
-  const double upLum = head.upLum;
-  const double scale = 1.0 / upLum;
+  const double scale = 1.0 / head.upLum;
   const float median = factor(nullptr, nullptr, nullptr);
-  display = static_cast<float>(upLum * median);
+  display = static_cast<float>(head.upLum * median);
   seen = static_cast<float>(seenLum / seenW * median);
   std::sort(byLum.begin(), byLum.end());
   double half = 0.5 * seenW, mid = byLum.back().first;
@@ -581,62 +573,80 @@ void Room::Impl::make() {
   dim = static_cast<float>(std::max(1.0 - kLightDim * lightsLum, 0.5));
   makeLevel();
   mean = static_cast<float>(head.mean * scale);
-  upAt = static_cast<float>(st.upLum * scale);
-  for (int k = 0; k < 9; ++k)
-    for (int ch = 0; ch < 3; ++ch)
-      sh[k][ch] = static_cast<float>(s[k][ch] * scale);
-  for (int l = 0; l < 2; ++l) {
-    for (int ch = 0; ch < 3; ++ch)
-      light[l][ch] = static_cast<float>(lt[l][ch] * scale);
-    lightDir[l] = rot_y(ld[l], yaw);
-  }
-  // Where the lights are, from the depth hits within 10 degrees of them
-  // (none: at a distance, as daylight through a window, whose glass depth
-  // doesn't see).
-  for (int l = 0; l < 2; ++l) {
-    lightAt[l] = false;
-    lightHits[l] = 0;
-    if (picked[l] < 0)
-      continue;
-    // A voxel's: where its parts' voxels are, by brightness, its distance
-    // from the point.
-    double vw = 0.0;
-    Vec3 vp{};
-    for (int f = 0; f < kParts; ++f) {
-      const int face = f / (kF * kF), j = (f / kF) % kF, i = f % kF;
-      const int cell = (face * kN + j / kSub) * kN + i / kSub;
-      if (!fromVoxel[f] || std::find(lightCells[l].begin(), lightCells[l].end(), cell) == lightCells[l].end())
+  // Each point's light, from there (the voxels drawn into a copy of the
+  // head's parts).
+  Vec3 headMean{};
+  for (const auto& v : views)
+    headMean = headMean + v.head * (1.f / static_cast<float>(views.size()));
+  const size_t count = std::max<size_t>(points.size(), 1);
+  at.resize(count);
+  float share0 = 0.f;
+  for (size_t pi = 0; pi < count; ++pi) {
+    At& a = at[pi];
+    const Vec3 here = evalPoint(pi);
+    std::vector<std::array<double, 3>> Pp = P;
+    std::vector<bool> seenP = partSeen;
+    std::vector<Vec3> partPos(kParts);
+    std::vector<bool> fromVoxel(kParts);
+    splat(here, Pp, seenP, partPos, fromVoxel);
+    if (pi == 0)
+      share0 = voxelShare;
+    const Built st = voxelShare > 0.f ? build(Pp, seenP) : head;
+    a.upAt = static_cast<float>(st.upLum * scale);
+    for (int k = 0; k < 9; ++k)
+      for (int ch = 0; ch < 3; ++ch)
+        a.sh[k][ch] = static_cast<float>(st.s[k][ch] * scale);
+    for (int l = 0; l < 2; ++l) {
+      for (int ch = 0; ch < 3; ++ch)
+        a.light[l][ch] = static_cast<float>(st.lt[l][ch] * scale);
+      a.lightDir[l] = rot_y(st.ld[l], yaw);
+    }
+    // Where the lights are: a voxel's, where the voxels of its parts are, by
+    // brightness, its range the distance from the point (its colour
+    // measured there); else from the depth hits within 10 degrees of it
+    // (none: at a distance, as daylight through a window, whose glass depth
+    // doesn't see), its range from where the head was.
+    for (int l = 0; l < 2; ++l) {
+      a.lightAt[l] = false;
+      a.lightHits[l] = 0;
+      a.lightRange[l] = 0.f;
+      if (st.picked[l] < 0)
         continue;
-      const double w = lum(P[f]);
-      vp = vp + partPos[f] * static_cast<float>(w);
-      vw += w;
+      const auto& cells = st.lightCells[l];
+      double vw = 0.0;
+      Vec3 vp{};
+      for (int f = 0; f < kParts; ++f) {
+        const int face = f / (kF * kF), j = (f / kF) % kF, i = f % kF;
+        const int cell = (face * kN + j / kSub) * kN + i / kSub;
+        if (!fromVoxel[f] || std::find(cells.begin(), cells.end(), cell) == cells.end())
+          continue;
+        const double w = lum(Pp[f]);
+        vp = vp + partPos[f] * static_cast<float>(w);
+        vw += w;
+      }
+      if (vw > 0.0) {
+        vp = vp * static_cast<float>(1.0 / vw);
+        a.lightPos[l] = fromCapture(vp);
+        a.lightAt[l] = true;
+        a.lightRange[l] = std::sqrt(dot(vp - here, vp - here));
+        continue;
+      }
+      const Vec3 u = st.ld[l];
+      double sum[3]{};
+      int n = 0;
+      for (const auto& h : hits)
+        if (h[0] * u.x + h[1] * u.y + h[2] * u.z > 0.9848f)
+          sum[0] += h[3], sum[1] += h[4], sum[2] += h[5], ++n;
+      a.lightHits[l] = n;
+      if (n < 2)
+        continue;
+      const Vec3 hp{static_cast<float>(sum[0] / n), static_cast<float>(sum[1] / n), static_cast<float>(sum[2] / n)};
+      a.lightPos[l] = fromCapture(hp);
+      a.lightAt[l] = true;
+      a.lightRange[l] = views.empty() ? 0.f : std::sqrt(dot(hp - headMean, hp - headMean));
     }
-    if (vw > 0.0) {
-      vp = vp * static_cast<float>(1.0 / vw);
-      lightPos[l] = fromCapture(vp);
-      lightAt[l] = true;
-      lightRange[l] = std::sqrt(dot(vp - at, vp - at));
-      continue;
-    }
-    const Vec3 u = ld[l];
-    double sum[3]{};
-    int n = 0;
-    for (const auto& h : hits)
-      if (h[0] * u.x + h[1] * u.y + h[2] * u.z > 0.9848f)
-        sum[0] += h[3], sum[1] += h[4], sum[2] += h[5], ++n;
-    lightHits[l] = n;
-    if (n < 2)
-      continue;
-    const Vec3 at{static_cast<float>(sum[0] / n), static_cast<float>(sum[1] / n), static_cast<float>(sum[2] / n)};
-    lightPos[l] = fromCapture(at);
-    lightAt[l] = true;
-    // Its distance from where the head was (the frames' mean): measured
-    // there, it falls off with distance from the point.
-    Vec3 head{};
-    for (const auto& v : views)
-      head = head + v.head * (1.f / static_cast<float>(views.size()));
-    lightRange[l] = views.empty() ? 0.f : std::sqrt(dot(at - head, at - head));
   }
+  voxelShare = share0;
   coverage = static_cast<float>(seenW / (4.0 * kPi));
   made = true;
   stale = false;
@@ -644,9 +654,9 @@ void Room::Impl::make() {
 
 // Where the light is made for: the point last asked about, or where the
 // head was on average.
-Vec3 Room::Impl::evalPoint() const {
-  if (havePoint)
-    return toCapture(pointAt);
+Vec3 Room::Impl::evalPoint(size_t i) const {
+  if (havePoint && i < points.size())
+    return toCapture(points[i]);
   Vec3 head{};
   for (const auto& v : views)
     head = head + v.head * (1.f / static_cast<float>(views.size()));
@@ -926,12 +936,13 @@ bool Room::moved(Vec3 p0, float y0, Vec3 p1, float y1) {
   const float dy = y1 - y0;
   c.pos = p1 + rot_y(c.pos - p0, dy);
   c.yaw += dy;
-  for (int l = 0; l < 2; ++l) {
-    c.lightPos[l] = p1 + rot_y(c.lightPos[l] - p0, dy);
-    c.lightDir[l] = rot_y(c.lightDir[l], dy);
-  }
-  if (c.havePoint)
-    c.pointAt = p1 + rot_y(c.pointAt - p0, dy);
+  for (auto& a : c.at)
+    for (int l = 0; l < 2; ++l) {
+      a.lightPos[l] = p1 + rot_y(a.lightPos[l] - p0, dy);
+      a.lightDir[l] = rot_y(a.lightDir[l], dy);
+    }
+  for (Vec3& p : c.points)
+    p = p1 + rot_y(p - p0, dy);
   // A turn of a degree or more: the SH turned with the parts.
   if (c.made && std::abs(dy) > 0.0175f) {
     c.make();
@@ -940,46 +951,67 @@ bool Room::moved(Vec3 p0, float y0, Vec3 p1, float y1) {
   return false;
 }
 
-bool Room::lightAt(Vec3 point, Lighting& out) {
+void Room::setPoints(const Vec3* pts, size_t n) {
   auto& c = *d_;
-  if (!c.made)
-    return false;
-  // The point moved (5 cm): the level from the frames looking at it there;
+  if (n == 0 || !pts)
+    return;
+  // A point moved (5 cm): the level from the frames looking at the first;
   // with voxels the light is stale, made from there by the next frame or
   // make() (a make costs milliseconds, too much for a render thread).
-  if (const Vec3 d = point - c.pointAt; !c.havePoint || dot(d, d) > 0.0025f) {
-    c.havePoint = true;
-    c.pointAt = point;
-    if (c.voxels.empty())
-      c.makeLevel();
-    else
-      c.stale = true;
+  bool moved = !c.havePoint || c.points.size() != n;
+  for (size_t i = 0; i < n && !moved; ++i) {
+    const Vec3 d = pts[i] - c.points[i];
+    moved = dot(d, d) > 0.0025f;
   }
-  out.sh = c.sh;
+  if (!moved)
+    return;
+  c.havePoint = true;
+  c.points.assign(pts, pts + n);
+  if (c.voxels.empty())
+    c.makeLevel();
+  else
+    c.stale = true;
+}
+
+bool Room::lightAt(size_t i, Lighting& out) const {
+  const auto& c = *d_;
+  if (!c.made)
+    return false;
+  const Impl::At& a = c.at[std::min(i, c.at.size() - 1)];
+  const bool have = c.havePoint && i < c.points.size();
+  out.sh = a.sh;
   for (int l = 0; l < 2; ++l) {
     Light& o = out.lights[l];
-    o.color = c.light[l];
-    o.dir = c.lightDir[l];
-    o.placed = c.lightAt[l];
-    o.pos = c.lightPos[l];
-    if (!c.lightAt[l])
+    o.color = a.light[l];
+    o.dir = a.lightDir[l];
+    o.placed = a.lightAt[l];
+    o.pos = a.lightPos[l];
+    o.range = 0.f;
+    if (!a.lightAt[l] || !have)
       continue;
     // A light with a place: toward it from the point, by the inverse square
-    // of its distance from where it was measured (the head): a ceiling light
-    // a table sits farther from than the head did lit it as strongly.
-    const Vec3 d = c.lightPos[l] - point;
+    // of its distance from where its colour was measured (until a make
+    // measures it from here): a ceiling light a table sits farther from than
+    // the head did lit it as strongly.
+    const Vec3 d = a.lightPos[l] - c.points[i];
     const float n2 = dot(d, d);
     if (n2 > 0.0025f)
       o.dir = d * (1.f / std::sqrt(n2));
-    if (c.lightRange[l] > 0.f && n2 >= 0.01f) {
-      const float k = std::clamp(c.lightRange[l] * c.lightRange[l] / n2, 0.2f, 2.f);
+    if (a.lightRange[l] > 0.f && n2 >= 0.01f) {
+      const float k = std::clamp(a.lightRange[l] * a.lightRange[l] / n2, 0.2f, 2.f);
       for (float& x : o.color)
         x *= k;
     }
+    o.range = std::sqrt(n2);
   }
   out.mean = c.mean;
   out.level = c.level;
   return true;
+}
+
+bool Room::lightAt(Vec3 point, Lighting& out) {
+  setPoints(&point, 1);
+  return lightAt(size_t{0}, out);
 }
 
 // The brightest cells: where, how bright (relative to the mean), how many of
@@ -1007,11 +1039,12 @@ std::string Room::Impl::brightest() const {
 
 std::string Room::summary() const {
   const auto& c = *d_;
+  const Impl::At& a0 = c.at[0];
   const auto at = [&](int l) {
     char b[48];
-    if (!c.lightAt[l])
+    if (!a0.lightAt[l])
       return std::string{"no"};
-    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f", c.lightPos[l].x, c.lightPos[l].y, c.lightPos[l].z);
+    std::snprintf(b, sizeof b, "%.2f,%.2f,%.2f", a0.lightPos[l].x, a0.lightPos[l].y, a0.lightPos[l].z);
     return std::string{b};
   };
   char exposure[48];
@@ -1027,10 +1060,10 @@ std::string Room::summary() const {
                 "seen %.4f, median %.4f, level %.2f (%.2f unclamped, exposure from %s, glare %.2f); light from above at the point %.2f; unseen as "
                 "%.2f,%.2f,%.2f above, %.2f,%.2f,%.2f below; brightest cells (x,y,z in the capture; times the "
                 "mean):",
-                c.coverage * 100.f, c.light[0][0], c.light[0][1], c.light[0][2], c.lightDir[0].x, c.lightDir[0].y,
-                c.lightDir[0].z, c.light[1][0], c.light[1][1], c.light[1][2], c.lightDir[1].x, c.lightDir[1].y,
-                c.lightDir[1].z, at(0).c_str(), at(1).c_str(), c.hits.size(), c.lightHits[0], c.lightHits[1],
-                c.voxels.size(), c.voxelShare * 100.f, c.makeMs, c.makeMaxMs, c.display, c.seen, c.middle, c.level, c.unclamped, exposure, c.pointGlare, c.upAt, c.fill[0][0],
+                c.coverage * 100.f, a0.light[0][0], a0.light[0][1], a0.light[0][2], a0.lightDir[0].x, a0.lightDir[0].y,
+                a0.lightDir[0].z, a0.light[1][0], a0.light[1][1], a0.light[1][2], a0.lightDir[1].x, a0.lightDir[1].y,
+                a0.lightDir[1].z, at(0).c_str(), at(1).c_str(), c.hits.size(), a0.lightHits[0], a0.lightHits[1],
+                c.voxels.size(), c.voxelShare * 100.f, c.makeMs, c.makeMaxMs, c.display, c.seen, c.middle, c.level, c.unclamped, exposure, c.pointGlare, a0.upAt, c.fill[0][0],
                 c.fill[0][1], c.fill[0][2], c.fill[1][0], c.fill[1][1], c.fill[1][2]);
   return buf + c.brightest();
 }

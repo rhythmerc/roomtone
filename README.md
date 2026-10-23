@@ -38,7 +38,7 @@ Coordinates are tracking space in metres, +Y up (OpenXR's). A `Room` isn't threa
 
 ## Status
 
-Extracted from [Xelee](https://github.com/rhythmerc/melee-pc) (a Melee port's Quest 3 mixed reality mode), where the stage sits on a table and is lit by the room. The constants were tuned on a Quest 3 in one user's rooms. Next: depth images placing the room's surfaces as points, so the light is made from wherever the content is (near walls, the table under it, a lamp beside it).
+Extracted from [Xelee](https://github.com/rhythmerc/melee-pc) (a Melee port's Quest 3 mixed reality mode), where the stage sits on a table and is lit by the room. The constants were tuned on a Quest 3 in one user's rooms. Depth images place the room's surfaces as 10 cm voxels, and the light is made from the points you ask about (several across the content, to blend between): near walls, the table under it and a lamp beside it light it from where they are. Placed lights carry a range, so a shader can light them as point lights.
 
 ## License
 
