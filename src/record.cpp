@@ -21,6 +21,7 @@ struct DepthHeader {
   int32_t width, height;
   float nearZ, farZ, tanLeft, tanRight, tanUp, tanDown;
   Pose view;
+  int64_t timeNs;
 };
 struct MovedRecord {
   Vec3 p0;
@@ -71,6 +72,7 @@ void Recorder::frame(const Frame& f) {
     return;
   const FrameHeader h{f.cols, f.rows, f.exposureMs, f.iso, f.head, f.timeNs};
   put2(kFrame, &h, sizeof h, f.cells, static_cast<uint32_t>(f.cols * f.rows * 4 * sizeof(float)));
+  std::fflush(f_); // an app is often killed, not closed
 }
 void Recorder::hit(Vec3 origin, Vec3 point) {
   const Vec3 v[2] = {origin, point};
@@ -79,7 +81,7 @@ void Recorder::hit(Vec3 origin, Vec3 point) {
 void Recorder::depth(const DepthImage& d) {
   if (!d.depth || d.width <= 0 || d.height <= 0)
     return;
-  const DepthHeader h{d.width, d.height, d.nearZ, d.farZ, d.tanLeft, d.tanRight, d.tanUp, d.tanDown, d.view};
+  const DepthHeader h{d.width, d.height, d.nearZ, d.farZ, d.tanLeft, d.tanRight, d.tanUp, d.tanDown, d.view, d.timeNs};
   std::vector<uint16_t> packed(static_cast<size_t>(d.width) * d.height);
   const int stride = d.stride > 0 ? d.stride : d.width;
   for (int y = 0; y < d.height; ++y)
@@ -170,6 +172,7 @@ bool replay(const std::string& path, Room& room, const std::function<void(const 
       d.nearZ = h.nearZ, d.farZ = h.farZ;
       d.tanLeft = h.tanLeft, d.tanRight = h.tanRight, d.tanUp = h.tanUp, d.tanDown = h.tanDown;
       d.view = h.view;
+      d.timeNs = h.timeNs;
       room.addDepth(d);
       e.kind = ReplayEvent::Depth;
       break;

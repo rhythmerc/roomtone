@@ -64,6 +64,7 @@ struct DepthImage {
   float nearZ = 0.1f, farZ = 0.f;        // farZ infinite or the far plane
   float tanLeft = -1.f, tanRight = 1.f, tanUp = 1.f, tanDown = -1.f;
   Pose view;
+  int64_t timeNs = 0; // the steady clock frames use; frames more than 0.5 s later don't use it
 };
 
 struct Light {
@@ -119,7 +120,13 @@ public:
   uint32_t frames() const;
   size_t hits() const;
   // The light at a point (where the content is); false while none is made.
+  // Cheap, for a render thread: with depth, a point moved 5 cm makes the
+  // light stale (the placed lights re-aimed meanwhile), and the next frame
+  // or make() makes it from there.
   bool lightAt(Vec3 point, Lighting& out);
+  // Whether a make is due for a moved point.
+  bool stale() const;
+  size_t voxels() const;
   // A line of diagnostics (coverage, lights, level, brightest cells).
   std::string summary() const;
 
