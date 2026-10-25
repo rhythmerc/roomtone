@@ -71,6 +71,16 @@ constexpr size_t kPointFrames = 30, kPointMinFrames = 10;
 constexpr float kFillMax = 2.f;
 // A light takes the excess of the bright cells within 17 degrees of its brightest.
 constexpr float kMergeCos = 0.956f;
+// A bright spot (spots()): the seen cells over kSpotOver times the mean (as
+// the lights take them), or with over kSpotClipped of their samples
+// clipped, from at least kSpotSamples samples (a cell glimpsed once at the
+// frame's edge is noise), chained with their bright neighbours; one counts
+// when its brightest is over kSpotPeak times the mean, or clipped. In the
+// user's dark room with a monitor (2026-10-25's recording), 2 times with
+// the 17 degrees from the brightest alone made 12 spots of the monitor, its
+// glare and the desk under it; chained, with the peak, one.
+constexpr double kSpotOver = 2.0, kSpotPeak = 4.0;
+constexpr float kSpotClipped = 0.5f, kSpotSamples = 8.f;
 constexpr float kClipped = 0.02f, kClipBoost = 4.f;
 // Each part a running mean of about its last 600 samples.
 constexpr double kPartMax = 600.0;
@@ -230,6 +240,7 @@ struct Room::Impl {
   float seen = 0.f, middle = 0.f;  // the seen parts' mean and median luminance, as display
   float radiance = 0.f; // the median's relative radiance
   float unclamped = 0.f;
+  std::vector<Spot> spots; // the head's view's, at the last make (tracking space)
   std::array<Rgb, 2> fill{}; // the unseen parts' colour (luminance 1), upper and lower
   // The points the light was last made for (tracking space; the first sets
   // the level's exposure), and from how many frames looking at it (0: all
@@ -252,6 +263,7 @@ struct Room::Impl {
     int picked[2] = {-1, -1};
     std::vector<int> lightCells[2];
     double upLum = 0.0, mean = 0.0;
+    std::vector<Spot> spots; // tracking space
   };
   Built build(const std::vector<std::array<double, 3>>& P, const std::vector<bool>& partSeen);
   void make();
@@ -281,6 +293,8 @@ void Room::reset() {
   c.voxels.clear();
   c.voxelShare = 0.f;
   c.makeMaxMs = 0.f;
+  c.spots.clear();
+  c.middle = 0.f;
 }
 
 void Room::setCamera(const Camera& camera) {
@@ -294,6 +308,8 @@ uint32_t Room::frames() const { return d_->frames; }
 size_t Room::hits() const { return d_->hits.size(); }
 size_t Room::voxels() const { return d_->voxels.size(); }
 bool Room::stale() const { return d_->stale; }
+const std::vector<Spot>& Room::spots() const { return d_->spots; }
+float Room::seenMedian() const { return d_->made ? d_->middle : 0.f; }
 
 // The median exposure of the frames looking at the point (tracking space;
 // null: of all frames), as passthrough showed the room there: it shares the
@@ -447,6 +463,46 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
   double meanLum = 0.0;
   for (int i = 0; i < kCells; ++i)
     meanLum += lum(L[i]) / kCells;
+  // The bright spots, brightest first: the bright cells grouped by their
+  // bright neighbours (within kMergeCos of one another, chained), so a
+  // window and the glare round it are one spot, two lamps apart are two.
+  {
+    std::vector<std::pair<double, int>> bright;
+    for (int i = 0; i < kCells; ++i) {
+      const float samples = seenAs[i][1] + seenAs[i][2];
+      if (!seenCell[i] || samples < kSpotSamples)
+        continue;
+      const double v = lum(L[i]);
+      if (v > kSpotOver * meanLum || seenAs[i][2] > kSpotClipped * samples)
+        bright.emplace_back(v, i);
+    }
+    std::sort(bright.begin(), bright.end(), std::greater<>());
+    std::vector<bool> taken(bright.size());
+    for (size_t k = 0; k < bright.size(); ++k) {
+      if (taken[k])
+        continue;
+      const int top = bright[k].second;
+      Vec3 dsum{};
+      std::vector<size_t> open{k};
+      taken[k] = true;
+      while (!open.empty()) {
+        const size_t at = open.back();
+        open.pop_back();
+        const int cell = bright[at].second;
+        float dw;
+        cube_dir(cell, dw, kN);
+        dsum = dsum + unit_dir(cell) * static_cast<float>(std::max(bright[at].first - meanLum, 0.1 * meanLum) * dw);
+        for (size_t m = k + 1; m < bright.size(); ++m)
+          if (!taken[m] && dot(unit_dir(bright[m].second), unit_dir(cell)) > kMergeCos)
+            taken[m] = true, open.push_back(m);
+      }
+      const float samples = seenAs[top][1] + seenAs[top][2];
+      const double peak = bright[k].first / std::max(meanLum, 1e-12);
+      const bool clipped = seenAs[top][2] > kSpotClipped * samples;
+      if (peak > kSpotPeak || clipped)
+        b.spots.push_back({unit(rot_y(unit(dsum), yaw)), static_cast<float>(peak), clipped});
+    }
+  }
   auto& lt = b.lt;
   auto& ld = b.ld;
   auto& picked = b.picked;
@@ -557,6 +613,7 @@ void Room::Impl::make() {
   // the fighters' mean and the stage's light from above were the light's own
   // near a monitor, and farther away the rest of them brightened).
   const Built head = build(P, partSeen);
+  spots = head.spots;
   if (!(head.upLum > 1e-12))
     return;
   const double scale = 1.0 / head.upLum;
@@ -875,6 +932,7 @@ FrameResult Room::addFrame(const Frame& fr) {
       c.voxels.clear();
       c.frames = c.sinceMade = 0;
       c.changedNs = 0;
+      c.spots.clear();
       out.restarted = true;
     }
   }

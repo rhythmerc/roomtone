@@ -83,5 +83,12 @@ int main() {
               l.lights[0].dir.y, l.lights[0].dir.z, kLamp.x, kLamp.y, kLamp.z, c, l.level, room.summary().c_str());
   check(c > 0.95f, "the key light comes from the lamp");
   check(l.lights[0].color[0] > 0.f, "the key light is lit");
+  // One lamp, one bright spot, where it is.
+  const auto& spots = room.spots();
+  std::printf("%zu bright spots, the first %.2f,%.2f,%.2f x%.1f\n", spots.size(), spots.empty() ? 0.f : spots[0].dir.x,
+              spots.empty() ? 0.f : spots[0].dir.y, spots.empty() ? 0.f : spots[0].dir.z,
+              spots.empty() ? 0.f : spots[0].brightness);
+  check(spots.size() == 1, "one bright spot");
+  check(!spots.empty() && dotv(spots[0].dir, kLamp) > 0.95f, "the bright spot is the lamp");
   return failures ? 1 : 0;
 }

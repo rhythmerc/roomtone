@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace roomtone {
 
@@ -93,6 +94,18 @@ struct Lighting {
   float level = 1.f; // the reference's brightness as passthrough shows it (ABL)
 };
 
+// A bright spot the capture has seen (Room::spots): seen cells over twice
+// the room's mean, or mostly clipped, chained with their bright neighbours
+// (within 17 degrees) as one (a fixture's bulbs, a window and its glare),
+// whose brightest is over 4 times the mean or clipped. The key lights are
+// picked among the brightest cells; a player told what the capture found
+// counts these.
+struct Spot {
+  Vec3 dir{0.f, 0.f, -1.f}; // toward it, from where the head was (tracking space, unit)
+  float brightness = 0.f;   // its brightest cell's, times the room's mean
+  bool clipped = false;     // most of its brightest cell's samples clipped
+};
+
 // What a frame did.
 struct FrameResult {
   bool used = false;      // false: no exposure, no camera or an empty grid
@@ -141,6 +154,12 @@ public:
   size_t voxels() const;
   // A line of diagnostics (coverage, lights, level, brightest cells).
   std::string summary() const;
+  // Every bright spot as the light was last made, brightest first (empty
+  // before a make, and after the room changed until the next).
+  const std::vector<Spot>& spots() const;
+  // The seen room's median brightness as passthrough shows it (0-1 display;
+  // 0 before a make): a dark room's is low.
+  float seenMedian() const;
 
   struct Impl;
 

@@ -1,7 +1,7 @@
 // roomtone_replay RECORDING [--seconds S] [--probe x,y,z dx,dy,dz count step]:
 // plays a recorded session into a Room and prints what it made at the
-// recorded queries (S apart, default 2 s), at the end, and at points along a
-// line from there.
+// recorded queries (S apart, default 2 s), at the end (with the bright spots),
+// and at points along a line from there.
 #include "roomtone/record.hpp"
 
 #include <cstdio>
@@ -77,6 +77,10 @@ int main(int argc, char** argv) {
   room.make();
   std::printf("end:\n");
   print(lastTime, havePoint ? lastPoint : roomtone::Vec3{});
+  std::printf("%zu bright spots, seen median %.4f:", room.spots().size(), room.seenMedian());
+  for (const auto& sp : room.spots())
+    std::printf(" %.2f,%.2f,%.2f x%.1f%s;", sp.dir.x, sp.dir.y, sp.dir.z, sp.brightness, sp.clipped ? " clipped" : "");
+  std::printf("\n");
   // --probe x,y,z dx,dy,dz count step: the light at points along a line
   // (tracking space at the recording's end), each made alone: the light
   // from above and toward the key light, as a shader would light them.
