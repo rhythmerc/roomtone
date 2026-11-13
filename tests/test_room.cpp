@@ -90,5 +90,50 @@ int main() {
               spots.empty() ? 0.f : spots[0].brightness);
   check(spots.size() == 1, "one bright spot");
   check(!spots.empty() && dotv(spots[0].dir, kLamp) > 0.95f, "the bright spot is the lamp");
+
+  // The same sweep's frames at a scale (the room's light times `light`,
+  // a grid of `black` instead when it's over 0), at an exposure.
+  const auto sweep = [&](float light, float black, float exposureMs, float iso, int frames, bool* restarted) {
+    int used = 0;
+    for (int k = 0; k < frames; ++k) {
+      const float yaw = -1.2f + 2.4f * (k % 30) / 29.f, pitch = -0.4f + 1.4f * (k / 30 % 10) / 9.f;
+      const Quat head = yaw_pitch(yaw, pitch);
+      for (int gy = 0; gy < G; ++gy)
+        for (int gx = 0; gx < G; ++gx) {
+          const float px = (gx + 0.5f) * 1728.f / G, py = (gy + 0.5f) * 1728.f / G;
+          const Vec3 c{(px - cam.cx) / cam.fx, (py - cam.cy) / cam.fy, 1.f};
+          const Vec3 inHead = norm(rot({-1.f, 0.f, 0.f, 0.f}, c));
+          const float r = black > 0.f ? black : std::min(radiance(norm(rot(head, inHead))) * light, 1.f);
+          float* p = &cells[(gy * G + gx) * 4];
+          p[0] = p[1] = p[2] = r;
+          p[3] = 0.f;
+        }
+      Frame f{cells.data(), G, G, exposureMs, iso, {head, {}}, t};
+      t += 200'000'000;
+      const FrameResult result = room.addFrame(f);
+      used += result.used;
+      *restarted = *restarted || result.restarted;
+    }
+    return used;
+  };
+  // Black images (a covered or stopped camera, auto exposure at its longest)
+  // for six seconds: left out, the light as it was.
+  const float level = l.level;
+  bool restarted = false;
+  const int used = sweep(1.f, 0.0005f, 33.f, 3200.f, 30, &restarted);
+  Lighting after;
+  room.lightAt({0.f, -0.3f, -0.7f}, after);
+  std::printf("after black frames: used %d, restarted %d, level %.2f (was %.2f)\n", used, restarted, after.level, level);
+  check(used == 0 && !restarted, "black images are left out");
+  check(std::abs(after.level - level) < 1e-4f, "the light is kept through black images");
+  // A dim room is still a room: the lights down to a fifth, the camera's
+  // exposure five times longer (as auto exposure would): the same image,
+  // a fifth of the radiance; the capture starts over.
+  restarted = false;
+  sweep(0.2f, 0.f, 50.f, 100.f, 30, &restarted);
+  room.lightAt({0.f, -0.3f, -0.7f}, after);
+  std::printf("after the lights went down: restarted %d, level %.2f\n", restarted, after.level);
+  check(restarted, "a room whose lights went down starts the capture over");
+  check(after.level < level * 0.5f, "and is shown darker");
   return failures ? 1 : 0;
 }
