@@ -516,8 +516,7 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
   // a light). The mean would be the light's own in a room a window lights:
   // cut down to it, a window's cells kept many times the walls' light and
   // that went to the soft light, whose L2 lobe then rang below the walls'
-  // light (to nothing near the window) on what faced away from it, and
-  // whose mean, the brightness's reference, dimmed everything with it
+  // light (to nothing near the window) on what faced away from it
   // (2026-11-17).
   double floorLum = 0.0;
   {
@@ -537,6 +536,51 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
         break;
       }
     floorLum = std::min(floorLum, meanLum);
+  }
+  // The brightness's reference (Lighting::mean: a white surface lit by it
+  // shows at the level): the room's mean light without each light's core,
+  // its brightest cell and the bright cells within kMergeCos of it, cut down
+  // to the mean, as the lights were taken until 2026-11-17. The level's
+  // constants (kMedian here, the callers' white) were picked against it; a
+  // compact lamp or monitor stays out of it, as the level leaves it out (a
+  // stage far from a light found by the capture lost its share of the
+  // head's light with it in, 2026-10-23), and a wide window's light beyond
+  // its core stays in, as the walls it lights do. Taken from the lights as
+  // they're made now (each its whole spot, to the median), the reference was
+  // the walls' alone, a third of it in a room a window lights, and
+  // everything showed 3-4 times as bright (2026-11-17).
+  {
+    std::array<double, kCells> v{};
+    for (int i = 0; i < kCells; ++i)
+      v[i] = lum(L[i]);
+    int first = -1;
+    for (int l = 0; l < 2; ++l) {
+      int best = -1;
+      double bestLum = 2.0 * meanLum;
+      for (int i = 0; i < kCells; ++i) {
+        if (!seenCell[i] || i == first)
+          continue;
+        if (l == 1 && first >= 0 && dot(unit_dir(i), unit_dir(first)) > 0.7071f)
+          continue;
+        if (v[i] > bestLum)
+          bestLum = v[i], best = i;
+      }
+      if (best < 0)
+        break;
+      if (l == 0)
+        first = best;
+      const Vec3 bd = unit_dir(best);
+      for (int i = 0; i < kCells; ++i)
+        if (i == best || (seenCell[i] && v[i] > 2.0 * meanLum && dot(unit_dir(i), bd) > kMergeCos))
+          v[i] = std::min(v[i], meanLum);
+    }
+    double sum = 0.0;
+    for (int i = 0; i < kCells; ++i) {
+      float dw;
+      cube_dir(i, dw, kN);
+      sum += v[i] * dw;
+    }
+    b.mean = sum / (4.0 * kPi);
   }
   auto& lt = b.lt;
   auto& ld = b.ld;
@@ -608,10 +652,6 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
     up[ch] = s[0][ch] + s[1][ch] - s[6][ch] - s[8][ch] + std::max(ld[0].y, 0.f) * lt[0][ch] +
              std::max(ld[1].y, 0.f) * lt[1][ch];
   b.upLum = lum(up);
-  // The room's mean light without its lights, as the level (the walls'
-  // median) leaves them out: with them, a stage far from a light found by
-  // the capture lost its share of the head's light (2026-10-23).
-  b.mean = lum(s[0]);
   return b;
 }
 

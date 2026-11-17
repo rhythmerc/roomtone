@@ -90,7 +90,7 @@ struct Lighting {
   // the light at the point, or a light's falloff cancels.
   std::array<Rgb, 9> sh{};
   std::array<Light, 2> lights{};
-  float mean = 1.f;  // the reference's mean light over every direction, without its lights (as the level)
+  float mean = 1.f;  // the reference's mean light over every direction, without its lights' cores (the brightness's reference)
   float level = 1.f; // the reference's brightness as passthrough shows it (ABL)
 };
 
