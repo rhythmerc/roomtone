@@ -12,8 +12,9 @@
 // monitor ahead doesn't tint the directions the camera never saw.
 //
 // The light is made every few frames: up to two lights, the brightest cells
-// at least 45 degrees apart, by their excess over the mean (a window and a
-// ceiling light both count), the rest as SH L2. A light seen by depth gets a
+// at least 45 degrees apart with the bright cells chained to them, by their
+// excess over the room's surfaces (their median; a window and a ceiling
+// light both count), the rest as SH L2. A light seen by depth gets a
 // place in the room. Its level is the room's as passthrough shows it: the
 // seen room's median brightness in the frames' own pixel scale (the
 // relative radiance times the exposure of the frames that looked at the
@@ -460,9 +461,9 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
       L[i][k] /= cellW[i];
     seenAs[i][0] = static_cast<float>(lum(L[i]));
   }
-  // The lights: the brightest seen cells, at least 45 degrees apart, each
-  // its excess over the mean of the room taken out of the sky as a
-  // directional light of that irradiance over pi.
+  // The lights: the brightest seen cells (over twice the mean), at least 45
+  // degrees apart, each with its spot's excess over the room's surfaces
+  // taken out of the sky as a directional light of that irradiance over pi.
   const auto unit_dir = [](int cell) {
     float dw;
     return unit(cube_dir(cell, dw, kN));
@@ -510,15 +511,43 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
         b.spots.push_back({unit(rot_y(unit(dsum), yaw)), static_cast<float>(peak), clipped});
     }
   }
+  // What a light's cells keep: the room's surfaces' brightness, their
+  // median by solid angle (the wall a window or lamp would be if it weren't
+  // a light). The mean would be the light's own in a room a window lights:
+  // cut down to it, a window's cells kept many times the walls' light and
+  // that went to the soft light, whose L2 lobe then rang below the walls'
+  // light (to nothing near the window) on what faced away from it, and
+  // whose mean, the brightness's reference, dimmed everything with it
+  // (2026-11-17).
+  double floorLum = 0.0;
+  {
+    std::vector<std::pair<double, double>> byLum(kCells); // luminance, solid angle
+    double total = 0.0;
+    for (int i = 0; i < kCells; ++i) {
+      float dw;
+      cube_dir(i, dw, kN);
+      byLum[i] = {lum(L[i]), dw};
+      total += dw;
+    }
+    std::sort(byLum.begin(), byLum.end());
+    double half = 0.5 * total;
+    for (const auto& [l, dw] : byLum)
+      if ((half -= dw) <= 0.0) {
+        floorLum = l;
+        break;
+      }
+    floorLum = std::min(floorLum, meanLum);
+  }
   auto& lt = b.lt;
   auto& ld = b.ld;
   auto& picked = b.picked;
   auto& lightCells = b.lightCells;
+  std::array<bool, kCells> inLight{};
   for (int l = 0; l < 2; ++l) {
     int best = -1;
     double bestLum = 2.0 * meanLum;
     for (int i = 0; i < kCells; ++i) {
-      if (!seenCell[i] || i == picked[0])
+      if (!seenCell[i] || inLight[i])
         continue;
       if (l == 1 && picked[0] >= 0 && dot(unit_dir(i), unit_dir(picked[0])) > 0.7071f)
         continue;
@@ -528,22 +557,27 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
     if (best < 0)
       break;
     picked[l] = best;
-    // With its bright neighbours (within kMergeCos): a light where cells
-    // meet (straight up is where four do) would otherwise light by a
-    // quarter of it, the rest blurred into the SH.
-    const Vec3 bd = unit_dir(best);
+    // With the bright cells chained to it (each within kMergeCos of one in
+    // the light already), as the spots are: a light where cells meet
+    // (straight up is where four do) would otherwise light by a quarter of
+    // it, and a window wider than a cell (one seen from beside it covers
+    // half the sky) by its middle, the rest left bright in the SH.
     lightCells[l] = {best};
-    for (int i = 0; i < kCells; ++i)
-      if (i != best && seenCell[i] && lum(L[i]) > 2.0 * meanLum && dot(unit_dir(i), bd) > kMergeCos)
-        lightCells[l].push_back(i);
+    inLight[best] = true;
+    for (size_t at = 0; at < lightCells[l].size(); ++at) {
+      const Vec3 cd = unit_dir(lightCells[l][at]);
+      for (int i = 0; i < kCells; ++i)
+        if (!inLight[i] && seenCell[i] && lum(L[i]) > 2.0 * meanLum && dot(unit_dir(i), cd) > kMergeCos)
+          inLight[i] = true, lightCells[l].push_back(i);
+    }
     Vec3 dsum{};
     for (const int cell : lightCells[l]) {
       float dw;
       cube_dir(cell, dw, kN);
-      const double exLum = std::max(lum(L[cell]) - meanLum, 0.0);
+      const double exLum = std::max(lum(L[cell]) - floorLum, 0.0);
       dsum = dsum + unit_dir(cell) * static_cast<float>(exLum * dw);
       for (int k = 0; k < 3; ++k) {
-        const double excess = std::max(L[cell][k] - meanLum, 0.0);
+        const double excess = std::max(L[cell][k] - floorLum, 0.0);
         lt[l][k] += excess * dw / kPi;
         L[cell][k] -= excess;
       }
