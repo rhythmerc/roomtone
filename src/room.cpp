@@ -15,7 +15,8 @@
 // at least 45 degrees apart with the bright cells chained to them, by their
 // excess over the room's surfaces (their median; a window and a ceiling
 // light both count), the rest as SH L2. A light seen by depth gets a
-// place in the room. Its level is the room's as passthrough shows it: the
+// place in the room (when depth saw most of it); one well below the point
+// is a lit surface and stays in the SH. Its level is the room's as passthrough shows it: the
 // seen room's median brightness in the frames' own pixel scale (the
 // relative radiance times the exposure of the frames that looked at the
 // point asked about), by kMedian.
@@ -108,6 +109,25 @@ constexpr uint32_t kMakeEvery = 5;
 // table under it); directions no voxel covers keep the head's view, as
 // light from a distance (windows, bulbs, what depth doesn't reach).
 constexpr float kVoxel = 0.1f, kDepthNear = 0.2f, kDepthFar = 4.5f, kNearest = 0.15f, kDepthTol = 1.15f;
+// A light gets its place from the voxels when they saw at least kPlaceShare
+// of its brightness. Placed from a sliver of it, it sat wherever a few dim
+// voxels at its edge were: the head's view of its own lap, below a point
+// beside the content, went on the floor beside the pool from 0.4% of its
+// light, and as a point light there it lit what was near it 10-100 times
+// over (2026-11-17's recordings: the false places came from 0.4-2%, the
+// real ones from 100%).
+constexpr float kPlaceShare = 0.5f;
+// A lit surface is left in the soft light, not made a light (at a point made
+// with depth): light reflected and spread, not a lamp's from one place.
+// Placed, it's flat (its voxels' heights spread under kFlat times their
+// spread across) and lower than the point by kSurfaceBelow: a lit patch of
+// floor or table (sunlit carpet, a white sheet); a window or a screen stands
+// on a wall, a lamp hangs above. Unplaced, its colour is the head's view
+// that way, and more than 15 degrees below the horizon the head looked at
+// the floor, a table, its lap (a laptop it looked down at lights the
+// content too, as soft light). A high point sees a window below it: only
+// what's flat counts by place, not the direction alone.
+constexpr float kBelowHorizon = -0.259f, kFlat = 0.35f, kSurfaceBelow = 0.1f, kFlatCell = 0.06f;
 constexpr int kDepthGrid = 80;
 constexpr int64_t kDepthFreshNs = 500'000'000;
 constexpr double kVoxelMax = 300.0, kVoxelMinSamples = 3.0;
@@ -270,10 +290,13 @@ struct Room::Impl {
     std::array<Vec3, 2> ld{Vec3{0.f, 1.f, 0.f}, Vec3{0.f, 1.f, 0.f}};
     int picked[2] = {-1, -1};
     std::vector<int> lightCells[2];
+    // Each light as SH (what it took out of the cells), to give it back.
+    std::array<std::array<std::array<double, 3>, 9>, 2> ls{};
     double upLum = 0.0, mean = 0.0;
     std::vector<Spot> spots; // tracking space
   };
-  Built build(const std::vector<std::array<double, 3>>& P, const std::vector<bool>& partSeen);
+  Built build(const std::vector<std::array<double, 3>>& P, const std::vector<bool>& partSeen,
+              const std::vector<bool>* surfaceCell = nullptr);
   void make();
   Vec3 evalPoint(size_t i) const;
   void splat(Vec3 at, std::vector<std::array<double, 3>>& P, std::vector<bool>& partSeen,
@@ -381,7 +404,7 @@ void Room::make() { d_->make(); }
 // lights, SH L2 (unscaled, in tracking space), and the light on an
 // up-facing surface. Also the summary's fill and seenAs.
 Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
-                                    const std::vector<bool>& partSeen) {
+                                    const std::vector<bool>& partSeen, const std::vector<bool>* surfaceCell) {
   Built b;
   std::vector<std::array<double, 3>> L(kCells);
   std::array<bool, kCells> seenCell{};
@@ -587,6 +610,7 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
   auto& picked = b.picked;
   auto& lightCells = b.lightCells;
   std::array<bool, kCells> inLight{};
+  std::vector<std::array<double, 3>> taken[2]; // what each light took from its cells (lightCells' order)
   for (int l = 0; l < 2; ++l) {
     int best = -1;
     double bestLum = 2.0 * meanLum;
@@ -605,13 +629,18 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
     // the light already), as the spots are: a light where cells meet
     // (straight up is where four do) would otherwise light by a quarter of
     // it, and a window wider than a cell (one seen from beside it covers
-    // half the sky) by its middle, the rest left bright in the SH.
+    // half the sky) by its middle, the rest left bright in the SH. Not
+    // between a lit floor or table (surfaceCell) and the rest: a window and
+    // the patch of floor it lights are a light and a lit surface (chained,
+    // the light was placed between them, mid-air).
     lightCells[l] = {best};
     inLight[best] = true;
+    const bool low = surfaceCell && (*surfaceCell)[best];
     for (size_t at = 0; at < lightCells[l].size(); ++at) {
       const Vec3 cd = unit_dir(lightCells[l][at]);
       for (int i = 0; i < kCells; ++i)
-        if (!inLight[i] && seenCell[i] && lum(L[i]) > 2.0 * meanLum && dot(unit_dir(i), cd) > kMergeCos)
+        if (!inLight[i] && seenCell[i] && lum(L[i]) > 2.0 * meanLum && dot(unit_dir(i), cd) > kMergeCos &&
+            (!surfaceCell || (*surfaceCell)[i] == low))
           inLight[i] = true, lightCells[l].push_back(i);
     }
     Vec3 dsum{};
@@ -620,10 +649,12 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
       cube_dir(cell, dw, kN);
       const double exLum = std::max(lum(L[cell]) - floorLum, 0.0);
       dsum = dsum + unit_dir(cell) * static_cast<float>(exLum * dw);
+      auto& t = taken[l].emplace_back();
       for (int k = 0; k < 3; ++k) {
         const double excess = std::max(L[cell][k] - floorLum, 0.0);
         lt[l][k] += excess * dw / kPi;
         L[cell][k] -= excess;
+        t[k] = excess;
       }
     }
     ld[l] = unit(dsum);
@@ -632,20 +663,22 @@ Room::Impl::Built Room::Impl::build(const std::vector<std::array<double, 3>>& P,
   constexpr std::array<double, 9> basis{0.282095, 0.488603, 0.488603, 0.488603, 1.092548,
                                         1.092548, 0.315392, 1.092548, 0.546274};
   constexpr std::array<double, 9> lobe{1.0, 2.0 / 3, 2.0 / 3, 2.0 / 3, 0.25, 0.25, 0.25, 0.25, 0.25};
-  std::array<std::array<double, 3>, 9> acc{};
-  for (int i = 0; i < kCells; ++i) {
+  // Radiance by cell into SH irradiance over pi (tracking space).
+  const auto project = [&](int cell, const std::array<double, 3>& v, std::array<std::array<double, 3>, 9>& out) {
     float dw;
-    const Vec3 dv = unit(rot_y(cube_dir(i, dw, kN), yaw));
+    const Vec3 dv = unit(rot_y(cube_dir(cell, dw, kN), yaw));
     const double x = dv.x, y = dv.y, z = dv.z;
     const std::array<double, 9> poly{1.0, y, z, x, x * y, y * z, 3.0 * z * z - 1.0, x * z, x * x - y * y};
     for (int k = 0; k < 9; ++k)
       for (int ch = 0; ch < 3; ++ch)
-        acc[k][ch] += L[i][ch] * basis[k] * poly[k] * dw;
-  }
+        out[k][ch] += v[ch] * basis[k] * poly[k] * dw * lobe[k] * basis[k];
+  };
   auto& s = b.s;
-  for (int k = 0; k < 9; ++k)
-    for (int ch = 0; ch < 3; ++ch)
-      s[k][ch] = acc[k][ch] * lobe[k] * basis[k];
+  for (int i = 0; i < kCells; ++i)
+    project(i, L[i], s);
+  for (int l = 0; l < 2; ++l)
+    for (size_t c = 0; c < taken[l].size(); ++c)
+      project(lightCells[l][c], taken[l][c], b.ls[l]);
   // Scaled so an up-facing surface gets 1.
   std::array<double, 3> up;
   for (int ch = 0; ch < 3; ++ch)
@@ -733,7 +766,23 @@ void Room::Impl::make() {
     splat(here, Pp, seenP, partPos, fromVoxel);
     if (pi == 0)
       share0 = voxelShare;
-    const Built st = voxelShare > 0.f ? build(Pp, seenP) : head;
+    // The cells on a floor or table: their voxels flat (at one height, to
+    // kFlatCell) and lower than the point.
+    std::vector<bool> surfaceCell(kCells);
+    if (voxelShare > 0.f) {
+      std::vector<std::array<float, 4>> ys(kCells, {1e9f, -1e9f, 0.f, 0.f}); // min, max, sum, count
+      for (int f = 0; f < kParts; ++f) {
+        if (!fromVoxel[f])
+          continue;
+        const int face = f / (kF * kF), j = (f / kF) % kF, i = f % kF;
+        auto& y = ys[(face * kN + j / kSub) * kN + i / kSub];
+        y[0] = std::min(y[0], partPos[f].y), y[1] = std::max(y[1], partPos[f].y), y[2] += partPos[f].y, y[3] += 1.f;
+      }
+      for (int c = 0; c < kCells; ++c)
+        surfaceCell[c] = ys[c][3] >= kSub * kSub / 2 && ys[c][1] - ys[c][0] < kFlatCell &&
+                         ys[c][2] / ys[c][3] < here.y - kSurfaceBelow;
+    }
+    const Built st = voxelShare > 0.f ? build(Pp, seenP, &surfaceCell) : head;
     a.upAt = static_cast<float>(st.upLum * scale);
     for (int k = 0; k < 9; ++k)
       for (int ch = 0; ch < 3; ++ch)
@@ -752,6 +801,7 @@ void Room::Impl::make() {
     // covers kept of the head's view (a window's glass, which depth sees
     // through: its colour was the head's at every point, and its range from
     // the point cancelled its falloff, 2026-10-23).
+    bool surface[2]{};
     for (int l = 0; l < 2; ++l) {
       a.lightAt[l] = false;
       a.lightHits[l] = 0;
@@ -774,17 +824,35 @@ void Room::Impl::make() {
         vp = vp + partPos[f] * static_cast<float>(w);
         vw += w;
       }
-      if (vw > 0.0) {
+      const float share = all > 0.0 ? static_cast<float>(vw / all) : 0.f;
+      a.lightVoxelShare[l] = share;
+      if (vw > 0.0 && share >= kPlaceShare) {
         vp = vp * static_cast<float>(1.0 / vw);
         a.lightPos[l] = fromCapture(vp);
         a.lightAt[l] = true;
-        const float share = all > 0.0 ? static_cast<float>(vw / all) : 1.f;
-        a.lightVoxelShare[l] = share;
         const float dHere2 = dot(vp - here, vp - here);
         const float dHead2 = views.empty() ? dHere2 : dot(vp - headMean, vp - headMean);
         a.lightRange[l] = std::sqrt(share * dHere2 + (1.f - share) * dHead2);
+        // Flat and lower than the point: lit floor or table.
+        if (vp.y < here.y - kSurfaceBelow) {
+          double dy = 0.0, dxz = 0.0;
+          for (int f = 0; f < kParts; ++f) {
+            const int face = f / (kF * kF), j = (f / kF) % kF, i = f % kF;
+            const int cell = (face * kN + j / kSub) * kN + i / kSub;
+            if (!fromVoxel[f] || std::find(cells.begin(), cells.end(), cell) == cells.end())
+              continue;
+            const double w = lum(Pp[f]);
+            const Vec3 d = partPos[f] - vp;
+            dy += w * std::abs(d.y);
+            dxz += w * std::sqrt(d.x * d.x + d.z * d.z);
+          }
+          surface[l] = dy < kFlat * dxz;
+        }
         continue;
       }
+      // Unplaced, its colour is the head's view that way: well below the
+      // horizon, the floor, a table, a lap.
+      surface[l] = st.ld[l].y < kBelowHorizon;
       const Vec3 u = st.ld[l];
       double sum[3]{};
       int n = 0;
@@ -798,6 +866,17 @@ void Room::Impl::make() {
       a.lightPos[l] = fromCapture(hp);
       a.lightAt[l] = true;
       a.lightRange[l] = views.empty() ? 0.f : std::sqrt(dot(hp - headMean, hp - headMean));
+    }
+    // A lit surface: back into the soft light.
+    for (int l = 0; l < 2; ++l) {
+      if (!(voxelShare > 0.f) || !surface[l])
+        continue;
+      for (int k = 0; k < 9; ++k)
+        for (int ch = 0; ch < 3; ++ch)
+          a.sh[k][ch] += static_cast<float>(st.ls[l][k][ch] * scale);
+      a.light[l] = {};
+      a.lightAt[l] = false;
+      a.lightRange[l] = 0.f;
     }
   }
   voxelShare = share0;
